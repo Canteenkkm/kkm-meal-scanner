@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KKM Meal Scanner</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f4f6f9;color:#1d2733}
+header{background:#1f5fa8;color:#fff;padding:10px 14px;font-weight:bold;display:flex;justify-content:space-between;align-items:center}
+main{max-width:520px;margin:0 auto;padding:12px}
+.card{background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:14px;margin-bottom:12px}
+input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #dde3ea;border-radius:7px;font-size:16px;margin:4px 0 10px}
+.btn{padding:10px 14px;border-radius:8px;border:1px solid #dde3ea;background:#fff;font-size:15px;cursor:pointer}
+.primary{background:#1f5fa8;color:#fff;border-color:#1f5fa8}
+.stats{display:flex;gap:8px}.stat{flex:1;text-align:center;background:#f7f9fb;border-radius:8px;padding:8px}.stat b{display:block;font-size:24px}
+.result{border-radius:12px;padding:22px;text-align:center;margin-top:10px;min-height:100px}
+.ok{background:#e3f5ea;color:#1e8a4c;border:3px solid #1e8a4c}.bad{background:#fbe5e2;color:#c0392b;border:3px solid #c0392b}
+.big{font-size:28px;font-weight:bold}.who{font-size:20px;color:#1d2733;margin-top:6px}
+#reader{margin:8px auto}.hidden{display:none}.err{color:#c0392b}
+</style>
+</head>
+<body>
+<header><span>KKM Meal Scanner</span><button id="out" class="btn hidden" style="font-size:12px;padding:4px 8px">Log out</button></header>
+<main>
+  <div id="login" class="card">
+    Employee ID<input id="lid" autocapitalize="characters">
+    PIN<input id="lpin" type="password" inputmode="numeric">
+    <button class="btn primary" id="lbtn" style="width:100%">Log in</button>
+    <div id="lerr" class="err"></div>
+  </div>
+  <div id="app" class="card hidden">
+    Meal<select id="slot"></select>
+    <div class="stats"><div class="stat"><b id="sc">–</b>Collected</div><div class="stat"><b id="so">–</b>Ordered</div></div>
+    <input id="code" placeholder="Scan QR or type employee ID, then Enter" style="margin-top:10px;text-align:center">
+    <div style="text-align:center"><button class="btn" id="cam">Start camera</button></div>
+    <div id="reader"></div>
+    <div id="res"></div>
+  </div>
+</main>
+<script>
+// Paste the web app URL (ends with /exec) from Deploy > Manage deployments.
+var API_URL = 'https://script.google.com/macros/s/AKfycbzP-QiZ5w5Vi3cLneg7_7UILLkhkYTRKoJEYX703pXkxm7YSNDTsM58vzA0mZpcxXJF/exec';
+
+var MSG = {OK:'Hand over meal', ALREADY:'Already collected', NO_ORDER:'No order for this meal', UNKNOWN:'Unknown code', INACTIVE:'Inactive employee'};
+var token = null, cam = null, busy = false, last = '', lastAt = 0;
+function $(s){ return document.querySelector(s); }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function api(action, payload){
+  // text/plain keeps this a "simple" request, so no CORS preflight is needed.
+  return fetch(API_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({action: action, token: token, payload: payload || {}})})
+    .then(function(r){ return r.json(); })
+    .then(function(r){ if (!r.ok) throw r; return r.data; });
+}
+try { token = sessionStorage.getItem('scanTok'); } catch(e){}
+if (token) start();
+
+$('#lbtn').onclick = function(){
+  $('#lerr').textContent = '';
+  api('login', {empId: $('#lid').value, pin: $('#lpin').value}).then(function(r){
+    token = r.token; try { sessionStorage.setItem('scanTok', token); } catch(e){}
+    start();
+  }).catch(function(e){ $('#lerr').textContent = e.code === 'LOGIN_FAILED' ? 'Wrong employee ID or PIN.' : 'Error: ' + (e.code || e); });
+};
+$('#out').onclick = function(){ api('logout'); token = null; try { sessionStorage.removeItem('scanTok'); } catch(e){} location.reload(); };
+
+function start(){
+  api('bootstrap').then(function(d){
+    if (['SCANNER','HR','ADMIN'].indexOf(d.user.role) < 0) { $('#lerr').textContent = 'This account cannot scan.'; return; }
+    $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); $('#out').classList.remove('hidden');
+    $('#slot').innerHTML = d.slots.map(function(s){ return '<option value="' + esc(s.slot) + '"' + (s.slot === d.currentSlot ? ' selected' : '') + '>' + esc(s.labelEn) + ' (' + esc(s.pickupStart) + '–' + esc(s.pickupEnd) + ')</option>'; }).join('');
+    stats(); $('#code').focus();
+  }).catch(function(){ token = null; });
+}
+function stats(){ api('scanStats', {slot: $('#slot').value}).then(function(r){ $('#sc').textContent = r.collected; $('#so').textContent = r.ordered; }).catch(function(){}); }
+$('#slot').onchange = stats;
+$('#code').onkeydown = function(e){ if (e.key === 'Enter') scan(this.value); };
+$('#cam').onclick = function(){
+  if (cam) { cam.stop().catch(function(){}); cam = null; this.textContent = 'Start camera'; return; }
+  cam = new Html5Qrcode('reader');
+  var btn = this;
+  cam.start({facingMode: 'environment'}, {fps: 10, qrbox: 220}, scan, function(){})
+    .then(function(){ btn.textContent = 'Stop camera'; })
+    .catch(function(e){ cam = null; $('#res').innerHTML = '<div class="result bad">Camera error: ' + esc(e) + '</div>'; });
+};
+function beep(ok){ try { var c = new (window.AudioContext || window.webkitAudioContext)(); var o = c.createOscillator(); o.frequency.value = ok ? 1200 : 300; o.connect(c.destination); o.start(); o.stop(c.currentTime + (ok ? .15 : .5)); } catch(e){} }
+function scan(code){
+  code = String(code || '').trim();
+  if (!code || busy) return;
+  if (code === last && Date.now() - lastAt < 3000) return;
+  last = code; lastAt = Date.now(); busy = true;
+  api('scan', {code: code, slot: $('#slot').value}).then(function(r){
+    var ok = r.result === 'OK'; beep(ok);
+    $('#res').innerHTML = '<div class="result ' + (ok ? 'ok' : 'bad') + '"><div class="big">' + (ok ? '✓ ' : '✗ ') + MSG[r.result] + '</div>' +
+      (r.name ? '<div class="who">' + esc(r.name) + (r.nickname ? ' (' + esc(r.nickname) + ')' : '') + ' · ' + esc(r.empId) + '</div><div>' + esc(r.department) + ' / ' + esc(r.team) + '</div>' : '') + '</div>';
+    if (ok) $('#sc').textContent = Number($('#sc').textContent || 0) + 1;
+  }).catch(function(e){ beep(false); $('#res').innerHTML = '<div class="result bad">Error: ' + esc(e.code || e) + '</div>'; })
+    .then(function(){ busy = false; $('#code').value = ''; $('#code').focus(); });
+}
+</script>
+</body>
+</html>
