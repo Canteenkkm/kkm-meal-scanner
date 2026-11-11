@@ -54,6 +54,12 @@ function api(action, payload){
     .then(function(r){ if (!r.ok) throw r; return r.data; });
 }
 try { token = sessionStorage.getItem('scanTok'); } catch(e){}
+var m = /[#&]t=([^&]+)/.exec(location.hash);
+if (m) {
+  token = decodeURIComponent(m[1]);
+  try { sessionStorage.setItem('scanTok', token); } catch(e){}
+  history.replaceState(null, '', location.pathname); // remove it from the address bar
+}
 if (token) start();
 
 $('#lbtn').onclick = function(){
